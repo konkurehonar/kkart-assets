@@ -23,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '16'
+          node-version: '18'  # استفاده از نسخه جدیدتر Node.js
 
       - name: Install dependencies
         run: |
@@ -43,13 +43,22 @@ jobs:
           // Find all changed SVG files
           async function findChangedSvgFiles() {
             try {
-              const { stdout } = await execAsync('git diff --name-only HEAD HEAD~1 | grep -E "\\.svg$"');
+              const { stdout } = await execAsync('git diff --name-only HEAD HEAD~1 | grep -E "\\.svg$" || true');
+              const files = stdout.trim().split('\n').filter(file => file);
+              if (files.length > 0) {
+                return files;
+              }
+            } catch (error) {
+              console.log('Error finding changed SVG files, falling back to all SVG files');
+            }
+            
+            // Fallback to all SVG files if git diff fails or returns empty
+            try {
+              const { stdout } = await execAsync('find . -type f -name "*.svg" | grep -v "\\.optimized\\.svg" || true');
               return stdout.trim().split('\n').filter(file => file);
             } catch (error) {
-              console.log('No changed SVG files found or error occurred');
-              // Fallback to all SVG files if git diff fails
-              const { stdout } = await execAsync('find . -type f -name "*.svg" | grep -v "\.optimized\.svg"');
-              return stdout.trim().split('\n').filter(file => file);
+              console.error('Error finding SVG files:', error);
+              return [];
             }
           }
 
@@ -102,7 +111,14 @@ jobs:
                   { "removeTitle": true },
                   { "removeDesc": true }
                 ]
-              }' -i ${filePath} -o ${outputPath}`);
+              }' -i "${filePath}" -o "${outputPath}" || true`);
+              
+              // Check if output file exists
+              if (!fs.existsSync(outputPath)) {
+                console.log(`SVGO failed to create output file: ${outputPath}`);
+                // Copy the original file as fallback
+                fs.copyFileSync(filePath, outputPath);
+              }
               
               // Now add accessibility and metadata using Cheerio
               const svgContent = fs.readFileSync(outputPath, 'utf8');
@@ -170,8 +186,8 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add *.optimized.svg
-          git diff --quiet && git diff --staged --quiet || git commit -m "Optimize SVG files" -a
+          git add "*.optimized.svg" || echo "No optimized SVGs to add"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Optimize SVG files" -a || echo "No changes to commit"
         continue-on-error: true
 
       - name: Push changes
@@ -179,3 +195,4 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
