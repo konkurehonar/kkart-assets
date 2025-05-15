@@ -1,0 +1,20 @@
+This script does everything you requested:
+
+Automatically triggers when SVG files are added or modified
+Minifies the SVG using SVGO
+Makes SVGs accessible by adding:
+role="img"
+aria-label
+Bilingual <title> and <desc> tags in Farsi and English
+Creates a new .optimized.svg file alongside the original
+Generates tags based on the filename (splitting by dashes)
+Makes SVGs ready for direct use in websites and components by:
+Removing fixed dimensions for scalability
+Converting fills to currentColor for theme compatibility
+Cleaning up unnecessary attributes
+To use this script, simply:
+
+Create a .github/workflows directory in your repository
+Save this script as .github/workflows/svg-optimizer.yml
+Commit and push to your repository
+The script will automatically run whenever SVG files are added or modified, and will commit the optimized versions back to your repository.=

@@ -1,0 +1,181 @@
+name: SVG Optimization Workflow
+
+on:
+  push:
+    paths:
+      - '**.svg'
+    branches: [ main, master ]
+  pull_request:
+    paths:
+      - '**.svg'
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  optimize-svgs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: |
+          npm install -g svgo
+          npm install cheerio
+
+      - name: Create SVG optimization script
+        run: |
+          cat > optimize-svg.js << 'EOF'
+          const fs = require('fs');
+          const path = require('path');
+          const cheerio = require('cheerio');
+          const { exec } = require('child_process');
+          const { promisify } = require('util');
+          const execAsync = promisify(exec);
+
+          // Find all changed SVG files
+          async function findChangedSvgFiles() {
+            try {
+              const { stdout } = await execAsync('git diff --name-only HEAD HEAD~1 | grep -E "\\.svg$"');
+              return stdout.trim().split('\n').filter(file => file);
+            } catch (error) {
+              console.log('No changed SVG files found or error occurred');
+              // Fallback to all SVG files if git diff fails
+              const { stdout } = await execAsync('find . -type f -name "*.svg" | grep -v "\.optimized\.svg"');
+              return stdout.trim().split('\n').filter(file => file);
+            }
+          }
+
+          // Generate tags from filename
+          function generateTags(filename) {
+            const baseName = path.basename(filename, '.svg');
+            return baseName.split('-').filter(tag => tag.length > 0);
+          }
+
+          // Generate bilingual metadata from filename
+          function generateMetadata(filename) {
+            const baseName = path.basename(filename, '.svg');
+            const tags = generateTags(filename);
+            const title = {
+              fa: `آیکون ${tags.join(' ')}`,
+              en: `${tags.join(' ')} Icon`
+            };
+            const desc = {
+              fa: `این آیکون برای ${tags.join(' ')} در سایت کوشک کنکور هنر استفاده می‌شود`,
+              en: `This icon is used for ${tags.join(' ')} in KKArt website`
+            };
+            return { title, desc, tags };
+          }
+
+          // Process each SVG file
+          async function processSvgFile(filePath) {
+            console.log(`Processing: ${filePath}`);
+            
+            if (filePath.includes('.optimized.svg')) {
+              console.log(`Skipping already optimized file: ${filePath}`);
+              return;
+            }
+            
+            try {
+              // First run SVGO to clean up the SVG
+              const outputPath = filePath.replace('.svg', '.optimized.svg');
+              await execAsync(`svgo --config '{ 
+                "plugins": [
+                  { "removeViewBox": false },
+                  { "removeDimensions": true },
+                  { "cleanupAttrs": true },
+                  { "removeAttrs": { "attrs": "(fill|stroke|style)" } },
+                  { "collapseGroups": true },
+                  { "removeUselessStrokeAndFill": true },
+                  { "removeEmptyAttrs": true },
+                  { "removeEmptyContainers": true },
+                  { "convertStyleToAttrs": true },
+                  { "removeComments": true },
+                  { "removeMetadata": true },
+                  { "removeTitle": true },
+                  { "removeDesc": true }
+                ]
+              }' -i ${filePath} -o ${outputPath}`);
+              
+              // Now add accessibility and metadata using Cheerio
+              const svgContent = fs.readFileSync(outputPath, 'utf8');
+              const $ = cheerio.load(svgContent, { xmlMode: true });
+              const svgElement = $('svg');
+              
+              // Generate metadata
+              const metadata = generateMetadata(filePath);
+              
+              // Remove any existing metadata
+              $('title, desc').remove();
+              
+              // Add accessibility attributes
+              svgElement.attr('role', 'img');
+              svgElement.attr('aria-label', metadata.title.fa);
+              
+              // Add title and description in both languages
+              svgElement.prepend(`
+                <title xml:lang="fa">${metadata.title.fa}</title>
+                <title xml:lang="en">${metadata.title.en}</title>
+                <desc xml:lang="fa">${metadata.desc.fa}</desc>
+                <desc xml:lang="en">${metadata.desc.en}</desc>
+              `);
+              
+              // Add tags as data attributes
+              svgElement.attr('data-tags', metadata.tags.join(','));
+              
+              // Replace all fills with currentColor
+              $('[fill]').each((i, el) => {
+                $(el).attr('fill', 'currentColor');
+              });
+              
+              // Save the optimized SVG
+              fs.writeFileSync(outputPath, $.html());
+              console.log(`Optimized SVG saved to: ${outputPath}`);
+            } catch (error) {
+              console.error(`Error processing ${filePath}:`, error);
+            }
+          }
+
+          // Main function
+          async function main() {
+            try {
+              const svgFiles = await findChangedSvgFiles();
+              console.log(`Found ${svgFiles.length} SVG files to process`);
+              
+              for (const file of svgFiles) {
+                await processSvgFile(file);
+              }
+              
+              console.log('SVG optimization completed');
+            } catch (error) {
+              console.error('Error in SVG optimization workflow:', error);
+              process.exit(1);
+            }
+          }
+
+          main();
+          EOF
+
+      - name: Run SVG optimization script
+        run: node optimize-svg.js
+
+      - name: Commit optimized SVGs
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add *.optimized.svg
+          git diff --quiet && git diff --staged --quiet || git commit -m "Optimize SVG files" -a
+        continue-on-error: true
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
