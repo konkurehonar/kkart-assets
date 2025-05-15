@@ -17,170 +17,60 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'  # استفاده از نسخه جدیدتر Node.js
+          node-version: '20'  # استفاده از جدیدترین نسخه پایدار Node.js
 
       - name: Install dependencies
+        run: npm install -g svgo
+
+      # به جای نوشتن اسکریپت پیچیده، از ابزارهای خط فرمان استفاده می‌کنیم
+      - name: Find SVG files
+        id: find-svgs
         run: |
-          npm install -g svgo
-          npm install cheerio
+          echo "SVG_FILES=$(find . -type f -name "*.svg" | grep -v "\.optimized\.svg" | tr '\n' ' ')" >> $GITHUB_ENV
 
-      - name: Create SVG optimization script
+      - name: Optimize SVG files with SVGO
         run: |
-          cat > optimize-svg.js << 'EOF'
-          const fs = require('fs');
-          const path = require('path');
-          const cheerio = require('cheerio');
-          const { exec } = require('child_process');
-          const { promisify } = require('util');
-          const execAsync = promisify(exec);
-
-          // Find all changed SVG files
-          async function findChangedSvgFiles() {
-            try {
-              const { stdout } = await execAsync('git diff --name-only HEAD HEAD~1 | grep -E "\\.svg$" || true');
-              const files = stdout.trim().split('\n').filter(file => file);
-              if (files.length > 0) {
-                return files;
-              }
-            } catch (error) {
-              console.log('Error finding changed SVG files, falling back to all SVG files');
-            }
+          for file in $SVG_FILES; do
+            echo "Processing $file"
+            output_file="${file%.svg}.optimized.svg"
             
-            // Fallback to all SVG files if git diff fails or returns empty
-            try {
-              const { stdout } = await execAsync('find . -type f -name "*.svg" | grep -v "\\.optimized\\.svg" || true');
-              return stdout.trim().split('\n').filter(file => file);
-            } catch (error) {
-              console.error('Error finding SVG files:', error);
-              return [];
-            }
-          }
-
-          // Generate tags from filename
-          function generateTags(filename) {
-            const baseName = path.basename(filename, '.svg');
-            return baseName.split('-').filter(tag => tag.length > 0);
-          }
-
-          // Generate bilingual metadata from filename
-          function generateMetadata(filename) {
-            const baseName = path.basename(filename, '.svg');
-            const tags = generateTags(filename);
-            const title = {
-              fa: `آیکون ${tags.join(' ')}`,
-              en: `${tags.join(' ')} Icon`
-            };
-            const desc = {
-              fa: `این آیکون برای ${tags.join(' ')} در سایت کوشک کنکور هنر استفاده می‌شود`,
-              en: `This icon is used for ${tags.join(' ')} in KKArt website`
-            };
-            return { title, desc, tags };
-          }
-
-          // Process each SVG file
-          async function processSvgFile(filePath) {
-            console.log(`Processing: ${filePath}`);
+            # اجرای SVGO برای بهینه‌سازی پایه
+            svgo --config '{
+              "plugins": [
+                { "removeViewBox": false },
+                { "removeDimensions": true },
+                { "cleanupAttrs": true },
+                { "collapseGroups": true },
+                { "removeUselessStrokeAndFill": true },
+                { "removeEmptyAttrs": true },
+                { "removeEmptyContainers": true },
+                { "convertStyleToAttrs": true },
+                { "removeComments": true },
+                { "removeMetadata": true },
+                { "removeTitle": true },
+                { "removeDesc": true }
+              ]
+            }' -i "$file" -o "$output_file"
             
-            if (filePath.includes('.optimized.svg')) {
-              console.log(`Skipping already optimized file: ${filePath}`);
-              return;
-            }
+            # اضافه کردن ویژگی‌های دسترسی‌پذیری با استفاده از sed
+            filename=$(basename "$file" .svg)
+            tags=$(echo "$filename" | tr '-' ' ')
             
-            try {
-              // First run SVGO to clean up the SVG
-              const outputPath = filePath.replace('.svg', '.optimized.svg');
-              await execAsync(`svgo --config '{ 
-                "plugins": [
-                  { "removeViewBox": false },
-                  { "removeDimensions": true },
-                  { "cleanupAttrs": true },
-                  { "removeAttrs": { "attrs": "(fill|stroke|style)" } },
-                  { "collapseGroups": true },
-                  { "removeUselessStrokeAndFill": true },
-                  { "removeEmptyAttrs": true },
-                  { "removeEmptyContainers": true },
-                  { "convertStyleToAttrs": true },
-                  { "removeComments": true },
-                  { "removeMetadata": true },
-                  { "removeTitle": true },
-                  { "removeDesc": true }
-                ]
-              }' -i "${filePath}" -o "${outputPath}" || true`);
-              
-              // Check if output file exists
-              if (!fs.existsSync(outputPath)) {
-                console.log(`SVGO failed to create output file: ${outputPath}`);
-                // Copy the original file as fallback
-                fs.copyFileSync(filePath, outputPath);
-              }
-              
-              // Now add accessibility and metadata using Cheerio
-              const svgContent = fs.readFileSync(outputPath, 'utf8');
-              const $ = cheerio.load(svgContent, { xmlMode: true });
-              const svgElement = $('svg');
-              
-              // Generate metadata
-              const metadata = generateMetadata(filePath);
-              
-              // Remove any existing metadata
-              $('title, desc').remove();
-              
-              // Add accessibility attributes
-              svgElement.attr('role', 'img');
-              svgElement.attr('aria-label', metadata.title.fa);
-              
-              // Add title and description in both languages
-              svgElement.prepend(`
-                <title xml:lang="fa">${metadata.title.fa}</title>
-                <title xml:lang="en">${metadata.title.en}</title>
-                <desc xml:lang="fa">${metadata.desc.fa}</desc>
-                <desc xml:lang="en">${metadata.desc.en}</desc>
-              `);
-              
-              // Add tags as data attributes
-              svgElement.attr('data-tags', metadata.tags.join(','));
-              
-              // Replace all fills with currentColor
-              $('[fill]').each((i, el) => {
-                $(el).attr('fill', 'currentColor');
-              });
-              
-              // Save the optimized SVG
-              fs.writeFileSync(outputPath, $.html());
-              console.log(`Optimized SVG saved to: ${outputPath}`);
-            } catch (error) {
-              console.error(`Error processing ${filePath}:`, error);
-            }
-          }
-
-          // Main function
-          async function main() {
-            try {
-              const svgFiles = await findChangedSvgFiles();
-              console.log(`Found ${svgFiles.length} SVG files to process`);
-              
-              for (const file of svgFiles) {
-                await processSvgFile(file);
-              }
-              
-              console.log('SVG optimization completed');
-            } catch (error) {
-              console.error('Error in SVG optimization workflow:', error);
-              process.exit(1);
-            }
-          }
-
-          main();
-          EOF
-
-      - name: Run SVG optimization script
-        run: node optimize-svg.js
+            # اضافه کردن role="img" به تگ svg
+            sed -i 's/<svg/<svg role="img"/g' "$output_file"
+            
+            # اضافه کردن عنوان و توضیحات
+            sed -i "s/<svg role=\"img\"/<svg role=\"img\">\n  <title xml:lang=\"fa\">آیکون $tags<\/title>\n  <title xml:lang=\"en\">$tags Icon<\/title>\n  <desc xml:lang=\"fa\">این آیکون برای $tags در سایت کوشک کنکور هنر استفاده می‌شود<\/desc>\n  <desc xml:lang=\"en\">This icon is used for $tags in KKArt website<\/desc/g" "$output_file"
+            
+            # تبدیل fill به currentColor
+            sed -i 's/fill="#[0-9a-fA-F]\{3,6\}"/fill="currentColor"/g' "$output_file"
+            
+            echo "Optimized SVG saved to $output_file"
+          done
 
       - name: Commit optimized SVGs
         run: |
@@ -195,4 +85,3 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-
